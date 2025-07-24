@@ -2,29 +2,35 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from functools import wraps
-from flask import Flask, jsonify, Response, request, redirect, url_for
+from flask import Flask, jsonify, Response, request
 import flask
 import os
 from cache import MemoryCache
+import logging
+from waitress import serve
+
+from vanna.ollama import Ollama
+from vanna.chromadb import ChromaDB_VectorStore
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__, static_url_path='')
 
 # SETUP
 cache = MemoryCache()
 
-# from vanna.local import LocalContext_OpenAI
-# vn = LocalContext_OpenAI()
+class MyVanna(ChromaDB_VectorStore, Ollama):
+    def __init__(self, config=None):
+        self.chroma_path = os.environ.get('CHROMA_PATH', './chroma')
+        self.ollama_model = os.environ.get('OLLAMA_MODEL', 'phi3')
 
-from vanna.remote import VannaDefault
-vn = VannaDefault(model=os.environ['VANNA_MODEL'], api_key=os.environ['VANNA_API_KEY'])
+        ChromaDB_VectorStore.__init__(self, config={'path': self.chroma_path})
+        Ollama.__init__(self, config={'model': self.ollama_model})
 
-vn.connect_to_snowflake(
-    account=os.environ['SNOWFLAKE_ACCOUNT'],
-    username=os.environ['SNOWFLAKE_USERNAME'],
-    password=os.environ['SNOWFLAKE_PASSWORD'],
-    database=os.environ['SNOWFLAKE_DATABASE'],
-    warehouse=os.environ['SNOWFLAKE_WAREHOUSE'],
-)
+vn = MyVanna()
+vn.connect_to_sqlite('my-database.sqlite')
 
 # NO NEED TO CHANGE ANYTHING BELOW THIS LINE
 def requires_cache(fields):
@@ -34,10 +40,12 @@ def requires_cache(fields):
             id = request.args.get('id')
 
             if id is None:
+                logger.warning("No id provided")
                 return jsonify({"type": "error", "error": "No id provided"})
             
             for field in fields:
                 if cache.get(id=id, field=field) is None:
+                    logger.warning(f"No {field} found for id {id}")
                     return jsonify({"type": "error", "error": f"No {field} found"})
             
             field_values = {field: cache.get(id=id, field=field) for field in fields}
@@ -51,6 +59,7 @@ def requires_cache(fields):
 
 @app.route('/api/v0/generate_questions', methods=['GET'])
 def generate_questions():
+    logger.info("Generating sample questions")
     return jsonify({
         "type": "question_list", 
         "questions": vn.generate_questions(),
@@ -60,8 +69,10 @@ def generate_questions():
 @app.route('/api/v0/generate_sql', methods=['GET'])
 def generate_sql():
     question = flask.request.args.get('question')
+    logger.info(f"Generating SQL for question: {question}")
 
     if question is None:
+        logger.warning("No question provided")
         return jsonify({"type": "error", "error": "No question provided"})
 
     id = cache.generate_id(question=question)
@@ -80,6 +91,7 @@ def generate_sql():
 @app.route('/api/v0/run_sql', methods=['GET'])
 @requires_cache(['sql'])
 def run_sql(id: str, sql: str):
+    logger.info(f"Running SQL for id {id}: {sql}")
     try:
         df = vn.run_sql(sql=sql)
 
@@ -93,11 +105,13 @@ def run_sql(id: str, sql: str):
             })
 
     except Exception as e:
+        logger.error(f"Error running SQL for id {id}: {e}")
         return jsonify({"type": "error", "error": str(e)})
 
 @app.route('/api/v0/download_csv', methods=['GET'])
 @requires_cache(['df'])
 def download_csv(id: str, df):
+    logger.info(f"Downloading CSV for id {id}")
     csv = df.to_csv()
 
     return Response(
@@ -109,6 +123,7 @@ def download_csv(id: str, df):
 @app.route('/api/v0/generate_plotly_figure', methods=['GET'])
 @requires_cache(['df', 'question', 'sql'])
 def generate_plotly_figure(id: str, df, question, sql):
+    logger.info(f"Generating Plotly figure for id {id}")
     try:
         code = vn.generate_plotly_code(question=question, sql=sql, df_metadata=f"Running df.dtypes gives:\n {df.dtypes}")
         fig = vn.get_plotly_figure(plotly_code=code, df=df, dark_mode=False)
@@ -123,7 +138,7 @@ def generate_plotly_figure(id: str, df, question, sql):
                 "fig": fig_json,
             })
     except Exception as e:
-        # Print the stack trace
+        logger.error(f"Error generating Plotly figure for id {id}: {e}")
         import traceback
         traceback.print_exc()
 
@@ -131,6 +146,7 @@ def generate_plotly_figure(id: str, df, question, sql):
 
 @app.route('/api/v0/get_training_data', methods=['GET'])
 def get_training_data():
+    logger.info("Getting training data")
     df = vn.get_training_data()
 
     return jsonify(
@@ -142,15 +158,17 @@ def get_training_data():
 
 @app.route('/api/v0/remove_training_data', methods=['POST'])
 def remove_training_data():
-    # Get id from the JSON body
     id = flask.request.json.get('id')
+    logger.info(f"Removing training data for id {id}")
 
     if id is None:
+        logger.warning("No id provided for removing training data")
         return jsonify({"type": "error", "error": "No id provided"})
 
     if vn.remove_training_data(id=id):
         return jsonify({"success": True})
     else:
+        logger.error(f"Couldn't remove training data for id {id}")
         return jsonify({"type": "error", "error": "Couldn't remove training data"})
 
 @app.route('/api/v0/train', methods=['POST'])
@@ -159,18 +177,20 @@ def add_training_data():
     sql = flask.request.json.get('sql')
     ddl = flask.request.json.get('ddl')
     documentation = flask.request.json.get('documentation')
+    logger.info(f"Adding training data: question={question}, sql={sql}, ddl={ddl}, documentation={documentation}")
 
     try:
         id = vn.train(question=question, sql=sql, ddl=ddl, documentation=documentation)
 
         return jsonify({"id": id})
     except Exception as e:
-        print("TRAINING ERROR", e)
+        logger.error(f"Error adding training data: {e}")
         return jsonify({"type": "error", "error": str(e)})
 
 @app.route('/api/v0/generate_followup_questions', methods=['GET'])
 @requires_cache(['df', 'question', 'sql'])
 def generate_followup_questions(id: str, df, question, sql):
+    logger.info(f"Generating followup questions for id {id}")
     followup_questions = vn.generate_followup_questions(question=question, sql=sql, df=df)
 
     cache.set(id=id, field='followup_questions', value=followup_questions)
@@ -186,6 +206,7 @@ def generate_followup_questions(id: str, df, question, sql):
 @app.route('/api/v0/load_question', methods=['GET'])
 @requires_cache(['question', 'sql', 'df', 'fig_json', 'followup_questions'])
 def load_question(id: str, question, sql, df, fig_json, followup_questions):
+    logger.info(f"Loading question for id {id}")
     try:
         return jsonify(
             {
@@ -199,10 +220,12 @@ def load_question(id: str, question, sql, df, fig_json, followup_questions):
             })
 
     except Exception as e:
+        logger.error(f"Error loading question for id {id}: {e}")
         return jsonify({"type": "error", "error": str(e)})
 
 @app.route('/api/v0/get_question_history', methods=['GET'])
 def get_question_history():
+    logger.info("Getting question history")
     return jsonify({"type": "question_history", "questions": cache.get_all(field_list=['question']) })
 
 @app.route('/')
@@ -210,4 +233,5 @@ def root():
     return app.send_static_file('index.html')
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    logger.info("Starting Vanna Flask app")
+    serve(app, host='0.0.0.0', port=8080)

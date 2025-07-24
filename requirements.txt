@@ -1,4 +1,6 @@
 flask
-vanna[snowflake]
+vanna[ollama,chromadb]
 db-dtypes
 python-dotenv
+ollama
+waitress
