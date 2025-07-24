@@ -9,7 +9,7 @@ from cache import MemoryCache
 import logging
 from waitress import serve
 
-from config import MyVanna, get_db_connection
+from config import MyVanna, get_db_connection_params
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -22,23 +22,23 @@ cache = MemoryCache()
 
 vn = MyVanna()
 
-db_connection = get_db_connection()
+db_params = get_db_connection_params()
 
-if db_connection['db_type'] == 'sqlite':
-    vn.connect_to_sqlite(db_connection['path'])
-elif db_connection['db_type'] == 'mysql':
+if db_params['db_type'] == 'sqlite':
+    vn.connect_to_sqlite(db_params['path'])
+elif db_params['db_type'] == 'mysql':
     vn.connect_to_mysql(
-        host=db_connection['host'],
-        user=db_connection['user'],
-        password=db_connection['password'],
-        db=db_connection['database'],
+        host=db_params['host'],
+        user=db_params['user'],
+        password=db_params['password'],
+        db=db_params['database'],
     )
-elif db_connection['db_type'] == 'postgresql':
+elif db_params['db_type'] == 'postgresql':
     vn.connect_to_postgres(
-        host=db_connection['host'],
-        user=db_connection['user'],
-        password=db_connection['password'],
-        db=db_connection['database'],
+        host=db_params['host'],
+        user=db_params['user'],
+        password=db_params['password'],
+        db=db_params['database'],
     )
 
 # NO NEED TO CHANGE ANYTHING BELOW THIS LINE

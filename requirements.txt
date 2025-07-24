@@ -1,8 +1,9 @@
 flask
-vanna[ollama,chromadb,openai,bedrock,mysql,postgres]
+vanna[ollama,chromadb,openai,bedrock,google,mysql,postgres]
 db-dtypes
 python-dotenv
 ollama
 waitress
 psycopg2-binary
 mysql-connector-python
+google-cloud-aiplatform
